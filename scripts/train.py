@@ -122,8 +122,16 @@ def main():
         masks = np.isin(array, special_tokens, invert=True)
         return [a[mask] for a, mask in zip(array, masks)]
 
+    def predictions_to_token_ids(predictions):
+        arr = np.asarray(predictions)
+        if arr.ndim == 3:
+            return arr.argmax(axis=-1)
+        if arr.dtype.kind in "fc":
+            return np.rint(arr).astype(np.int64)
+        return arr
+
     def metric_fn(p):
-        preds = remove_special_tokens(p.predictions)
+        preds = remove_special_tokens(predictions_to_token_ids(p.predictions))
         results = [compute_error_rates(
             tokenizer, training_args.dataloader_num_workers, *metric_targets.values(), preds
         )] if training_args.process_index == 0 else [None]
@@ -185,8 +193,9 @@ def main():
         outputs = trainer.predict(dataset['test'])
 
         if trainer.is_world_process_zero():
-            abc_outputs = processor.batch_decode(outputs.predictions, skip_special_tokens=True)
-            preds = remove_special_tokens(outputs.predictions)
+            pred_ids = predictions_to_token_ids(outputs.predictions)
+            abc_outputs = processor.batch_decode(pred_ids, skip_special_tokens=True)
+            preds = remove_special_tokens(pred_ids)
             with open(os.path.join(training_args.output_dir, "test_predictions.json"), "w") as f:
                 json.dump({'abc_transcription': abc_outputs, 'tokens': [p.tolist() for p in preds]}, f)
 

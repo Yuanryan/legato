@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -170,24 +170,14 @@ def save_trainable_artifacts(
     logger.info("Saved projector weights to %s", os.path.join(output_dir, lora_args.projector_output_name))
 
 
-def main():
-    parser = HfArgumentParser((Seq2SeqTrainingArguments, DataArguments, ModelArguments, VisionLoraArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        training_args, data_args, model_args, lora_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        training_args, data_args, model_args, lora_args = parser.parse_args_into_dataclasses()
-
-    set_seed(training_args.seed)
-
-    logging.basicConfig(
-        level=training_args.get_process_log_level(),
-        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
-    )
-    logger = get_logger(__name__)
-
-    torch.set_float32_matmul_precision("high")
-    if training_args.torch_compile:
-        torch._dynamo.config.cache_size_limit = 256
+def create_vision_lora_trainer(
+    training_args: Seq2SeqTrainingArguments,
+    data_args: DataArguments,
+    model_args: ModelArguments,
+    lora_args: VisionLoraArguments,
+    logger: logging.Logger,
+) -> Tuple[LegatoTrainer, object, List[str]]:
+    """Load data, attach LoRA + projector, and build ``LegatoTrainer`` (same as ``train_vision_lora`` main)."""
 
     logger.info("Loading dataset from Hugging Face: %s", data_args.dataset_path)
     dataset = load_dataset(data_args.dataset_path)
@@ -281,8 +271,17 @@ def main():
         masks = np.isin(array, special_tokens, invert=True)
         return [a[mask] for a, mask in zip(array, masks)]
 
+    def predictions_to_token_ids(predictions):
+        """Teacher-forcing eval returns float logits [batch, seq, vocab]; metrics need int token ids."""
+        arr = np.asarray(predictions)
+        if arr.ndim == 3:
+            return arr.argmax(axis=-1)
+        if arr.dtype.kind in "fc":
+            return np.rint(arr).astype(np.int64)
+        return arr
+
     def metric_fn(p):
-        preds = remove_special_tokens(p.predictions)
+        preds = remove_special_tokens(predictions_to_token_ids(p.predictions))
         results = [
             compute_error_rates(tokenizer, training_args.dataloader_num_workers, *metric_targets.values(), preds)
         ] if training_args.process_index == 0 else [None]
@@ -299,8 +298,35 @@ def main():
         compute_metrics=metric_fn,
     )
 
+    return trainer, processor, trainable_names
+
+
+def main():
+    parser = HfArgumentParser((Seq2SeqTrainingArguments, DataArguments, ModelArguments, VisionLoraArguments))
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        training_args, data_args, model_args, lora_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+    else:
+        training_args, data_args, model_args, lora_args = parser.parse_args_into_dataclasses()
+
+    set_seed(training_args.seed)
+
+    logging.basicConfig(
+        level=training_args.get_process_log_level(),
+        format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    )
+    logger = get_logger(__name__)
+
+    torch.set_float32_matmul_precision("high")
+    if training_args.torch_compile:
+        torch._dynamo.config.cache_size_limit = 256
+
+    trainer, processor, trainable_names = create_vision_lora_trainer(
+        training_args, data_args, model_args, lora_args, logger
+    )
+
     if training_args.do_train:
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+        save_trainable_artifacts(trainer, processor, training_args.output_dir, lora_args, trainable_names, logger)
 
     if training_args.do_eval:
         if not training_args.do_train and not model_args.pretrained_model:
@@ -329,7 +355,7 @@ def main():
         trainer.log_metrics("best eval", final_val_results)
         trainer.log(final_val_results)
 
-    if training_args.do_train or training_args.do_eval:
+    if training_args.do_eval and not training_args.do_train:
         save_trainable_artifacts(trainer, processor, training_args.output_dir, lora_args, trainable_names, logger)
 
     if training_args.do_predict:
@@ -337,8 +363,9 @@ def main():
 
         if trainer.is_world_process_zero():
             os.makedirs(training_args.output_dir, exist_ok=True)
-            abc_outputs = processor.batch_decode(outputs.predictions, skip_special_tokens=True)
-            preds = remove_special_tokens(outputs.predictions)
+            pred_ids = predictions_to_token_ids(outputs.predictions)
+            abc_outputs = processor.batch_decode(pred_ids, skip_special_tokens=True)
+            preds = remove_special_tokens(pred_ids)
             with open(os.path.join(training_args.output_dir, "test_predictions.json"), "w") as f:
                 json.dump({"abc_transcription": abc_outputs, "tokens": [p.tolist() for p in preds]}, f)
 

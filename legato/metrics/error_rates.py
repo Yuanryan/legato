@@ -10,12 +10,19 @@ def _edit_distance(args):
     return distance(*args)
 
 def error_rate(preds, refs, desc="error rate", num_workers=8):
-    with multiprocessing.Pool(num_workers) as pool:
-        dists = list(tqdm(
-            pool.imap_unordered(_edit_distance, zip(preds, refs)),
-            desc=f"computing {desc}...",
-            total=len(preds)
-        ))
+    pairs = list(zip(preds, refs))
+    if num_workers is None or num_workers < 1:
+        dists = [
+            _edit_distance(p)
+            for p in tqdm(pairs, desc=f"computing {desc}...", total=len(preds))
+        ]
+    else:
+        with multiprocessing.Pool(num_workers) as pool:
+            dists = list(tqdm(
+                pool.imap_unordered(_edit_distance, pairs),
+                desc=f"computing {desc}...",
+                total=len(preds)
+            ))
     return sum(dists) / sum(len(r) for r in refs) * 100
 
 def compute_error_rates(
