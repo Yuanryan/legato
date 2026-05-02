@@ -2,7 +2,10 @@ accelerate==1.8.0
 datasets==3.2.0
 fire==0.7.0
 transformers==4.54.0
+peft
 torch==2.6.0
+torchvision==0.21.0 
+torchaudio==2.6.0
 pillow==11.1.0
 numpy==1.26.4
 deepspeed
@@ -11,4 +14,4 @@ tqdm
 wandb
 pyparsing
 zss
-musicdiff @ git+ssh://git@github.com/guang-yng/efficient-musicdiff.git
+# musicdiff @ git+ssh://git@github.com/guang-yng/efficient-musicdiff.git
