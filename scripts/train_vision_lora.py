@@ -17,6 +17,7 @@ from transformers import (
     AutoProcessor,
     HfArgumentParser,
     Seq2SeqTrainingArguments,
+    TrainerCallback,
     TrainerState,
     set_seed,
 )
@@ -124,11 +125,11 @@ def configure_trainable_parameters(
 
 def save_trainable_artifacts(
     trainer: LegatoTrainer,
-    processor,
     output_dir: str,
     lora_args: VisionLoraArguments,
     trainable_names: List[str],
     logger: logging.Logger,
+    processor=None,
 ) -> None:
     if not trainer.is_world_process_zero():
         return
@@ -152,7 +153,8 @@ def save_trainable_artifacts(
         raise ValueError("No projector weights were found while saving trainable artifacts.")
     torch.save(projector_state, os.path.join(output_dir, lora_args.projector_output_name))
 
-    processor.save_pretrained(output_dir)
+    if processor is not None:
+        processor.save_pretrained(output_dir)
     with open(os.path.join(output_dir, "trainable_parameters.json"), "w") as f:
         json.dump(
             {
@@ -168,6 +170,36 @@ def save_trainable_artifacts(
 
     logger.info("Saved vision LoRA adapter to %s", adapter_dir)
     logger.info("Saved projector weights to %s", os.path.join(output_dir, lora_args.projector_output_name))
+
+
+class SaveLoraCallback(TrainerCallback):
+    """Saves LoRA adapter and projector weights alongside every regular trainer checkpoint.
+
+    Without this, LegatoTrainer._save strips all vision_model.* params, so intermediate
+    checkpoints would be missing the LoRA weights entirely.
+    """
+
+    def __init__(
+        self,
+        trainer: LegatoTrainer,
+        lora_args: VisionLoraArguments,
+        trainable_names: List[str],
+        logger: logging.Logger,
+    ):
+        self._trainer = trainer
+        self.lora_args = lora_args
+        self.trainable_names = trainable_names
+        self.logger = logger
+
+    def on_save(self, args, state, control, **kwargs):
+        ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        save_trainable_artifacts(
+            self._trainer,
+            ckpt_dir,
+            self.lora_args,
+            self.trainable_names,
+            self.logger,
+        )
 
 
 def create_vision_lora_trainer(
@@ -297,6 +329,7 @@ def create_vision_lora_trainer(
         eval_dataset=dataset["val"],
         compute_metrics=metric_fn,
     )
+    trainer.add_callback(SaveLoraCallback(trainer, lora_args, trainable_names, logger))
 
     return trainer, processor, trainable_names
 
@@ -326,7 +359,7 @@ def main():
 
     if training_args.do_train:
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-        save_trainable_artifacts(trainer, processor, training_args.output_dir, lora_args, trainable_names, logger)
+        save_trainable_artifacts(trainer, training_args.output_dir, lora_args, trainable_names, logger, processor=processor)
 
     if training_args.do_eval:
         if not training_args.do_train and not model_args.pretrained_model:
@@ -356,7 +389,7 @@ def main():
         trainer.log(final_val_results)
 
     if training_args.do_eval and not training_args.do_train:
-        save_trainable_artifacts(trainer, processor, training_args.output_dir, lora_args, trainable_names, logger)
+        save_trainable_artifacts(trainer, training_args.output_dir, lora_args, trainable_names, logger, processor=processor)
 
     if training_args.do_predict:
         outputs = trainer.predict(dataset["test"])

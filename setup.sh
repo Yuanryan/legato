@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Setup script for legato-train on a Linux training compute.
+# Tested with CUDA 12.4.
+#
+# Usage:
+#   bash setup.sh            # creates conda env "legato" and installs everything
+#   bash setup.sh --no-conda # installs into the current Python environment
+
+set -euo pipefail
+
+USE_CONDA=true
+ENV_NAME="legato"
+PYTHON_VERSION="3.12"
+
+# ---------------------------------------------------------------------------
+# Parse flags
+# ---------------------------------------------------------------------------
+for arg in "$@"; do
+    case $arg in
+        --no-conda) USE_CONDA=false ;;
+        *) echo "Unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Conda environment
+# ---------------------------------------------------------------------------
+if $USE_CONDA; then
+    if ! command -v conda &>/dev/null; then
+        echo "ERROR: conda not found. Install Miniconda or pass --no-conda."
+        exit 1
+    fi
+
+    if conda env list | grep -q "^${ENV_NAME} "; then
+        echo "Conda env '${ENV_NAME}' already exists — skipping creation."
+    else
+        echo "Creating conda env '${ENV_NAME}' with Python ${PYTHON_VERSION} ..."
+        conda create -y -n "${ENV_NAME}" python="${PYTHON_VERSION}"
+    fi
+
+    # Activate inside the script
+    # shellcheck disable=SC1091
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate "${ENV_NAME}"
+    echo "Activated conda env: ${ENV_NAME}"
+fi
+
+# ---------------------------------------------------------------------------
+# PyTorch (CUDA 12.4)
+# Install before everything else so other packages link against the right torch.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Installing PyTorch 2.6.0 + CUDA 12.4 ..."
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# ---------------------------------------------------------------------------
+# Core requirements (everything except torch, deepspeed, musicdiff)
+# ---------------------------------------------------------------------------
+echo ""
+echo "Installing core requirements ..."
+pip install \
+    accelerate==1.8.0 \
+    datasets==3.2.0 \
+    transformers==4.54.0 \
+    peft \
+    pillow==11.1.0 \
+    numpy==1.26.4 \
+    fire==0.7.0 \
+    Levenshtein \
+    tqdm \
+    wandb \
+    pyparsing \
+    zss
+
+# ---------------------------------------------------------------------------
+# DeepSpeed (Linux only — requires a C++ compiler and CUDA toolkit headers)
+# ---------------------------------------------------------------------------
+echo ""
+echo "Installing DeepSpeed ..."
+
+if ! command -v nvcc &>/dev/null; then
+    echo "WARNING: nvcc not found on PATH. DeepSpeed ops will be JIT-compiled at"
+    echo "         first use, which is slower. To pre-compile, install the full"
+    echo "         CUDA toolkit and re-run this script."
+    pip install deepspeed
+else
+    CUDA_VERSION=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
+    echo "Detected CUDA ${CUDA_VERSION} — building DeepSpeed with pre-compiled ops ..."
+    DS_BUILD_OPS=1 pip install deepspeed
+fi
+
+# ---------------------------------------------------------------------------
+# Optional: musicdiff (needed only for compute_OMR-NED.py)
+# ---------------------------------------------------------------------------
+echo ""
+read -r -p "Install musicdiff (needed for OMR-NED evaluation)? [y/N] " install_musicdiff
+if [[ "${install_musicdiff,,}" == "y" ]]; then
+    pip install "musicdiff @ git+ssh://git@github.com/guang-yng/efficient-musicdiff.git"
+fi
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+echo ""
+echo "Verifying installation ..."
+python - <<'EOF'
+import torch, transformers, accelerate, peft, datasets, deepspeed
+print(f"  torch        {torch.__version__}  (CUDA available: {torch.cuda.is_available()})")
+print(f"  transformers {transformers.__version__}")
+print(f"  accelerate   {accelerate.__version__}")
+print(f"  peft         {peft.__version__}")
+print(f"  datasets     {datasets.__version__}")
+print(f"  deepspeed    {deepspeed.__version__}")
+if torch.cuda.is_available():
+    print(f"  GPU          {torch.cuda.get_device_name(0)}")
+    print(f"  CUDA         {torch.version.cuda}")
+EOF
+
+echo ""
+echo "Setup complete."
+if $USE_CONDA; then
+    echo "Activate your environment with:  conda activate ${ENV_NAME}"
+fi
+
+# ---------------------------------------------------------------------------
+# Post-install checklist
+# ---------------------------------------------------------------------------
+echo ""
+echo "========================================================"
+echo " Post-install checklist"
+echo "========================================================"
+
+# 1. HuggingFace login
+# Llama-3.2-11B-Vision is a gated model — you must:
+#   (a) Accept the license at https://huggingface.co/meta-llama/Llama-3.2-11B-Vision
+#   (b) Log in here with a token that has read access
+echo ""
+echo "[1/4] HuggingFace login (required to download Llama-3.2-11B-Vision) ..."
+echo "      If you haven't already, accept the model license at:"
+echo "      https://huggingface.co/meta-llama/Llama-3.2-11B-Vision"
+echo ""
+read -r -p "      Log in now? [y/N] " do_hf_login
+if [[ "${do_hf_login,,}" == "y" ]]; then
+    huggingface-cli login
+fi
+
+# 2. Wandb login
+echo ""
+echo "[2/4] Weights & Biases login (for experiment tracking) ..."
+read -r -p "      Log in now? [y/N] " do_wandb_login
+if [[ "${do_wandb_login,,}" == "y" ]]; then
+    wandb login
+fi
+
+# 3. Accelerate config
+echo ""
+echo "[3/4] Accelerate config ..."
+echo "      Pre-made configs are in configs/ (zero2.yaml, inference.yaml)."
+echo "      Run the following if you want to auto-detect your GPU setup instead:"
+echo "        accelerate config"
+
+# 4. Reminders
+echo ""
+echo "[4/4] Other things to transfer / set up on this machine:"
+echo "      - Your prepared dataset (e.g. datasets/music_10k from prepare_dataset.py)"
+echo "      - Any local model checkpoints you want to resume from"
+echo "      - Set WANDB_PROJECT if you use a custom W&B project name:"
+echo "          export WANDB_PROJECT=legato-vision-lora"
+echo ""
+echo "========================================================"
