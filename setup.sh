@@ -12,6 +12,21 @@ USE_CONDA=true
 ENV_NAME="legato"
 PYTHON_VERSION="3.12"
 
+# Detect the right pip/python commands
+if command -v pip3 &>/dev/null; then
+    PIP="pip3"
+elif command -v pip &>/dev/null; then
+    PIP="pip"
+elif command -v python3 &>/dev/null; then
+    PIP="python3 -m pip"
+elif command -v python &>/dev/null; then
+    PIP="python -m pip"
+else
+    echo "ERROR: No pip or python found. Install Python 3 first."
+    exit 1
+fi
+echo "Using pip command: ${PIP}"
+
 # ---------------------------------------------------------------------------
 # Parse flags
 # ---------------------------------------------------------------------------
@@ -25,11 +40,12 @@ done
 # ---------------------------------------------------------------------------
 # Conda environment
 # ---------------------------------------------------------------------------
+if $USE_CONDA && ! command -v conda &>/dev/null; then
+    echo "WARNING: conda not found — continuing without conda."
+    USE_CONDA=false
+fi
+
 if $USE_CONDA; then
-    if ! command -v conda &>/dev/null; then
-        echo "ERROR: conda not found. Install Miniconda or pass --no-conda."
-        exit 1
-    fi
 
     if conda env list | grep -q "^${ENV_NAME} "; then
         echo "Conda env '${ENV_NAME}' already exists — skipping creation."
@@ -43,6 +59,14 @@ if $USE_CONDA; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate "${ENV_NAME}"
     echo "Activated conda env: ${ENV_NAME}"
+fi
+
+# ---------------------------------------------------------------------------
+# System build dependencies (needed by DeepSpeed / Triton C extensions)
+# ---------------------------------------------------------------------------
+if command -v apt-get &>/dev/null; then
+    echo "Installing system build dependencies ..."
+    sudo apt-get install -y python3.12-dev gcc g++ 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -87,18 +111,23 @@ if ! command -v nvcc &>/dev/null; then
     pip install deepspeed
 else
     CUDA_VERSION=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
+    # Derive CUDA_HOME from nvcc location if not already set
+    if [[ -z "${CUDA_HOME:-}" ]]; then
+        export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+        echo "Set CUDA_HOME=${CUDA_HOME}"
+    fi
     echo "Detected CUDA ${CUDA_VERSION} — building DeepSpeed with pre-compiled ops ..."
-    DS_BUILD_OPS=1 pip install deepspeed
+    DS_BUILD_OPS=1 CUDA_HOME="${CUDA_HOME}" pip install deepspeed
 fi
 
 # ---------------------------------------------------------------------------
 # Optional: musicdiff (needed only for compute_OMR-NED.py)
 # ---------------------------------------------------------------------------
-echo ""
-read -r -p "Install musicdiff (needed for OMR-NED evaluation)? [y/N] " install_musicdiff
-if [[ "${install_musicdiff,,}" == "y" ]]; then
-    pip install "musicdiff @ git+ssh://git@github.com/guang-yng/efficient-musicdiff.git"
-fi
+# echo ""
+# read -r -p "Install musicdiff (needed for OMR-NED evaluation)? [y/N] " install_musicdiff
+# if [[ "${install_musicdiff,,}" == "y" ]]; then
+#     pip install "musicdiff @ git+ssh://git@github.com/guang-yng/efficient-musicdiff.git"
+# fi
 
 # ---------------------------------------------------------------------------
 # Verify
