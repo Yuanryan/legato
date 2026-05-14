@@ -71,7 +71,8 @@ pip install \
     tqdm \
     wandb \
     pyparsing \
-    zss
+    zss \
+    gdown
 
 # ---------------------------------------------------------------------------
 # DeepSpeed (Linux only — requires a C++ compiler and CUDA toolkit headers)
@@ -153,17 +154,42 @@ if [[ "${do_wandb_login,,}" == "y" ]]; then
     wandb login
 fi
 
-# 3. Accelerate config
+# 3. Dataset download
+DATASET_GDRIVE_ID="13zBecrkUHHQaiGIVtQKxEAI94Rr-Qn_E"
+DATASET_DEST="datasets/music_10kv2"
+DATASET_ZIP="datasets/music_10kv2.zip"
+
 echo ""
-echo "[3/4] Accelerate config ..."
+echo "[3/5] Dataset download ..."
+if [[ -d "${DATASET_DEST}" ]]; then
+    echo "      Dataset already exists at ${DATASET_DEST} — skipping."
+else
+    read -r -p "      Download dataset from Google Drive (~several GB)? [y/N] " do_download
+    if [[ "${do_download,,}" == "y" ]]; then
+        mkdir -p datasets
+        echo "      Downloading ..."
+        gdown "${DATASET_GDRIVE_ID}" -O "${DATASET_ZIP}"
+        echo "      Extracting to datasets/ ..."
+        unzip -q "${DATASET_ZIP}" -d datasets/
+        rm "${DATASET_ZIP}"
+        echo "      Dataset ready at ${DATASET_DEST}"
+    else
+        echo "      Skipped. Download manually later with:"
+        echo "        gdown ${DATASET_GDRIVE_ID} -O ${DATASET_ZIP}"
+        echo "        unzip ${DATASET_ZIP} -d datasets/"
+    fi
+fi
+
+# 4. Accelerate config
+echo ""
+echo "[4/5] Accelerate config ..."
 echo "      Pre-made configs are in configs/ (zero2.yaml, inference.yaml)."
 echo "      Run the following if you want to auto-detect your GPU setup instead:"
 echo "        accelerate config"
 
-# 4. Reminders
+# 5. Reminders
 echo ""
-echo "[4/4] Other things to transfer / set up on this machine:"
-echo "      - Your prepared dataset (e.g. datasets/music_10k from prepare_dataset.py)"
+echo "[5/5] Other things to set up:"
 echo "      - Any local model checkpoints you want to resume from"
 echo "      - Set WANDB_PROJECT if you use a custom W&B project name:"
 echo "          export WANDB_PROJECT=legato-vision-lora"

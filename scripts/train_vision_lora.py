@@ -50,6 +50,29 @@ class VisionLoraArguments:
         default="projector.pt",
         metadata={"help": "Filename used to save trainable projector weights under output_dir."},
     )
+    # Decoder LoRA (optional — empty string disables it)
+    decoder_lora_target_modules: str = field(
+        default="",
+        metadata={"help": "Comma-separated decoder modules to apply LoRA to (e.g. 'q_proj,v_proj'). "
+                          "Empty string disables decoder LoRA."},
+    )
+    decoder_adapter_output_name: str = field(
+        default="decoder_adapter",
+        metadata={"help": "Subfolder name for the decoder LoRA adapter under output_dir."},
+    )
+    # Per-component learning rates (all default to training_args.learning_rate when unset)
+    vision_lora_lr: Optional[float] = field(
+        default=None,
+        metadata={"help": "Learning rate for vision LoRA adapters. Defaults to training_args.learning_rate."},
+    )
+    projector_lr: Optional[float] = field(
+        default=None,
+        metadata={"help": "Learning rate for the multimodal projector. Defaults to training_args.learning_rate."},
+    )
+    decoder_lora_lr: Optional[float] = field(
+        default=None,
+        metadata={"help": "Learning rate for decoder LoRA adapters. Defaults to training_args.learning_rate."},
+    )
 
 
 def _split_csv(value: str) -> List[str]:
@@ -99,6 +122,22 @@ def attach_vision_lora(model: LegatoModel, lora_args: VisionLoraArguments) -> Pe
     return model.vision_model
 
 
+def attach_decoder_lora(model: LegatoModel, lora_args: VisionLoraArguments) -> Optional[PeftModel]:
+    target_modules = _split_csv(lora_args.decoder_lora_target_modules)
+    if not target_modules:
+        return None
+
+    lora_config = LoraConfig(
+        r=lora_args.lora_r,
+        lora_alpha=lora_args.lora_alpha,
+        target_modules=target_modules,
+        lora_dropout=lora_args.lora_dropout,
+        bias="none",
+    )
+    model.model.language_model = get_peft_model(model.model.language_model, lora_config)
+    return model.model.language_model
+
+
 def configure_trainable_parameters(
     model: LegatoModel,
     lora_args: VisionLoraArguments,
@@ -106,6 +145,7 @@ def configure_trainable_parameters(
 ) -> List[str]:
     freeze_all_parameters(model)
     vision_lora = attach_vision_lora(model, lora_args)
+    decoder_lora = attach_decoder_lora(model, lora_args)
     projector_names = enable_projector_training(model, _split_csv(lora_args.projector_name_substrings))
 
     trainable_names = [name for name, param in model.named_parameters() if param.requires_grad]
@@ -118,6 +158,10 @@ def configure_trainable_parameters(
         100 * trainable_params / total_params,
     )
     logger.info("Vision LoRA adapter attached to: %s", vision_lora.__class__.__name__)
+    if decoder_lora is not None:
+        logger.info("Decoder LoRA adapter attached to: %s", decoder_lora.__class__.__name__)
+    else:
+        logger.info("Decoder LoRA: disabled")
     logger.info("Projector trainable parameters: %s", projector_names)
     logger.info("All trainable parameter names: %s", trainable_names)
     return trainable_names
@@ -142,6 +186,12 @@ def save_trainable_artifacts(
 
     adapter_dir = lora_args.adapter_output_dir or os.path.join(output_dir, "adapter")
     vision_model.save_pretrained(adapter_dir)
+
+    decoder_lm = unwrapped_model.model.language_model
+    if isinstance(decoder_lm, PeftModel):
+        decoder_adapter_dir = os.path.join(output_dir, lora_args.decoder_adapter_output_name)
+        decoder_lm.save_pretrained(decoder_adapter_dir)
+        logger.info("Saved decoder LoRA adapter to %s", decoder_adapter_dir)
 
     projector_substrings = _split_csv(lora_args.projector_name_substrings)
     projector_state = {
@@ -202,6 +252,53 @@ class SaveLoraCallback(TrainerCallback):
         )
 
 
+class VisionLoraTrainer(LegatoTrainer):
+    """LegatoTrainer extended with per-component learning rates for LoRA training."""
+
+    def __init__(self, *args, lora_args: VisionLoraArguments, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.lora_args = lora_args
+
+    def create_optimizer(self):
+        lora_args = self.lora_args
+        base_lr = self.args.learning_rate
+
+        # If no custom LRs are set, or DeepSpeed is managing the optimizer, use standard behaviour.
+        if self.is_deepspeed_enabled or not any(
+            [lora_args.vision_lora_lr, lora_args.projector_lr, lora_args.decoder_lora_lr]
+        ):
+            return super().create_optimizer()
+
+        projector_substrings = _split_csv(lora_args.projector_name_substrings)
+        vision_lora_params, projector_params, decoder_lora_params = [], [], []
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if any(s in name for s in projector_substrings):
+                projector_params.append(param)
+            elif "language_model" in name:
+                decoder_lora_params.append(param)
+            else:
+                vision_lora_params.append(param)
+
+        param_groups = []
+        if vision_lora_params:
+            param_groups.append({"params": vision_lora_params, "lr": lora_args.vision_lora_lr or base_lr})
+        if projector_params:
+            param_groups.append({"params": projector_params, "lr": lora_args.projector_lr or base_lr})
+        if decoder_lora_params:
+            param_groups.append({"params": decoder_lora_params, "lr": lora_args.decoder_lora_lr or base_lr})
+
+        self.optimizer = torch.optim.AdamW(
+            param_groups,
+            betas=(self.args.adam_beta1, self.args.adam_beta2),
+            eps=self.args.adam_epsilon,
+            weight_decay=self.args.weight_decay,
+        )
+        return self.optimizer
+
+
 def create_vision_lora_trainer(
     training_args: Seq2SeqTrainingArguments,
     data_args: DataArguments,
@@ -220,8 +317,9 @@ def create_vision_lora_trainer(
             logger.info("Using mini %s set: %s", split, mini_file)
             with open(mini_file, "r") as f:
                 filenames = json.load(f)
+            filename_to_idx = {name: i for i, name in enumerate(dataset[split]["filename"])}
             dataset[split] = dataset[split].select(
-                [dataset[split]["filename"].index(filename) for filename in filenames]
+                [filename_to_idx[filename] for filename in filenames]
             )
 
     if data_args.dummy_data:
@@ -321,13 +419,14 @@ def create_vision_lora_trainer(
             dist.broadcast_object_list(results, src=0)
         return results[0]
 
-    trainer = LegatoTrainer(
+    trainer = VisionLoraTrainer(
         model=model,
         args=training_args,
         data_collator=collate_fn,
         train_dataset=dataset["train"],
         eval_dataset=dataset["val"],
         compute_metrics=metric_fn,
+        lora_args=lora_args,
     )
     trainer.add_callback(SaveLoraCallback(trainer, lora_args, trainable_names, logger))
 
