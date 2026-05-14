@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate.logging import get_logger
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import (
     AutoConfig,
@@ -308,8 +308,8 @@ def create_vision_lora_trainer(
 ) -> Tuple[LegatoTrainer, object, List[str]]:
     """Load data, attach LoRA + projector, and build ``LegatoTrainer`` (same as ``train_vision_lora`` main)."""
 
-    logger.info("Loading dataset from Hugging Face: %s", data_args.dataset_path)
-    dataset = load_dataset(data_args.dataset_path)
+    logger.info("Loading dataset from disk: %s", data_args.dataset_path)
+    dataset = load_from_disk(data_args.dataset_path)
     if "val" not in dataset and "validation" in dataset:
         dataset["val"] = dataset["validation"]
     for split, mini_file in [("val", data_args.mini_val_file), ("test", data_args.mini_test_file)]:
@@ -336,7 +336,8 @@ def create_vision_lora_trainer(
         config = AutoConfig.from_pretrained(model_args.model_config)
         model = LegatoModel(config)
 
-    processor = AutoProcessor.from_pretrained(model_args.model_config)
+    processor_source = model_args.model_config or model_args.pretrained_model
+    processor = AutoProcessor.from_pretrained(processor_source)
     tokenizer = processor.tokenizer
     trainable_names = configure_trainable_parameters(model, lora_args, logger)
 
@@ -418,6 +419,8 @@ def create_vision_lora_trainer(
         if dist.is_available() and dist.is_initialized():
             dist.broadcast_object_list(results, src=0)
         return results[0]
+
+    training_args.remove_unused_columns = False
 
     trainer = VisionLoraTrainer(
         model=model,

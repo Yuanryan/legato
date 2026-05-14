@@ -4,7 +4,7 @@ fire==0.7.0
 transformers==4.54.0
 peft
 torch==2.6.0
-torchvision==0.21.0 
+torchvision==0.21.0
 torchaudio==2.6.0
 pillow==11.1.0
 numpy==1.26.4

@@ -211,3 +211,26 @@ Requirements:
       url={https://arxiv.org/abs/2506.19065}, 
 }
 ```
+
+
+## Further Training
+
+```bash
+PYTHONPATH=. accelerate launch --config_file configs/bf16.yaml \
+    scripts/train_vision_lora.py \
+    --pretrained_model guangyangmusic/legato \
+    --model_config guangyangmusic/legato \
+    --dataset_path datasets/music_10kv2 \
+    --output_dir outputs/vision_lora \
+    --do_train \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 8 \
+    --learning_rate 2e-4 \
+    --bf16 \
+    --save_steps 500 \
+    --logging_steps 10 \
+    --dataloader_num_workers 4
+
+
+```

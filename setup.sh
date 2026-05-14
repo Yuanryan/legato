@@ -66,7 +66,38 @@ fi
 # ---------------------------------------------------------------------------
 if command -v apt-get &>/dev/null; then
     echo "Installing system build dependencies ..."
-    sudo apt-get install -y python3.12-dev gcc g++ 2>/dev/null || true
+    sudo apt-get install -y python3.12-dev gcc g++ unzip 2>/dev/null || true
+
+    # NOTE: Do NOT install nvidia-cuda-toolkit via apt — it ships older NVIDIA
+    # libraries that conflict with whatever driver the compute node has pre-installed.
+    # The CUDA toolkit (nvcc) should already be present on a properly set-up GPU node.
+    # If nvcc is missing, ask the cluster admin or install from NVIDIA's official repo.
+fi
+
+# Set CUDA_HOME if not already set (needed by DeepSpeed and Triton at import time)
+if [[ -z "${CUDA_HOME:-}" ]]; then
+    if command -v nvcc &>/dev/null; then
+        export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+        echo "Set CUDA_HOME=${CUDA_HOME}"
+    elif [[ -d /usr/local/cuda ]]; then
+        export CUDA_HOME=/usr/local/cuda
+        echo "Set CUDA_HOME=${CUDA_HOME} (from /usr/local/cuda)"
+    else
+        echo "WARNING: CUDA_HOME not set and nvcc not found. DeepSpeed import may fail."
+        echo "         Install the CUDA toolkit or set CUDA_HOME manually."
+    fi
+fi
+# Add CUDA bin/lib to PATH for this session
+if [[ -n "${CUDA_HOME:-}" ]]; then
+    export PATH="${CUDA_HOME}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+    # Persist across future shells
+    grep -qxF "export CUDA_HOME=${CUDA_HOME}" ~/.bashrc 2>/dev/null || \
+        echo "export CUDA_HOME=${CUDA_HOME}" >> ~/.bashrc
+    grep -qF 'CUDA_HOME/bin' ~/.bashrc 2>/dev/null || {
+        echo 'export PATH="${CUDA_HOME}/bin:${PATH}"' >> ~/.bashrc
+        echo 'export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"' >> ~/.bashrc
+    }
 fi
 
 # ---------------------------------------------------------------------------
@@ -74,9 +105,9 @@ fi
 # Install before everything else so other packages link against the right torch.
 # ---------------------------------------------------------------------------
 echo ""
-echo "Installing PyTorch 2.6.0 + CUDA 12.4 ..."
+echo "Installing PyTorch 2.6.0 + CUDA 12.2 ..."
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-    --index-url https://download.pytorch.org/whl/cu124
+    --index-url https://download.pytorch.org/whl/cu122
 
 # ---------------------------------------------------------------------------
 # Core requirements (everything except torch, deepspeed, musicdiff)
