@@ -105,9 +105,9 @@ fi
 # Install before everything else so other packages link against the right torch.
 # ---------------------------------------------------------------------------
 echo ""
-echo "Installing PyTorch 2.6.0 + CUDA 12.2 ..."
+echo "Installing PyTorch 2.6.0 + CUDA 12.4 ..."
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
-    --index-url https://download.pytorch.org/whl/cu122
+    --index-url https://download.pytorch.org/whl/cu124
 
 # ---------------------------------------------------------------------------
 # Core requirements (everything except torch, deepspeed, musicdiff)

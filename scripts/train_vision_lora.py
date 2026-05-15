@@ -341,6 +341,18 @@ def create_vision_lora_trainer(
     tokenizer = processor.tokenizer
     trainable_names = configure_trainable_parameters(model, lora_args, logger)
 
+    # When loading from a checkpoint, restore trained LoRA weights instead of keeping random ones
+    if model_args.pretrained_model:
+        from peft import load_peft_weights, set_peft_model_state_dict
+        adapter_dir = os.path.join(model_args.pretrained_model, "adapter")
+        if os.path.isdir(adapter_dir):
+            logger.info("Loading trained vision LoRA weights from %s", adapter_dir)
+            set_peft_model_state_dict(model.vision_model, load_peft_weights(adapter_dir))
+        decoder_adapter_dir = os.path.join(model_args.pretrained_model, lora_args.decoder_adapter_output_name)
+        if os.path.isdir(decoder_adapter_dir) and isinstance(model.model.language_model, PeftModel):
+            logger.info("Loading trained decoder LoRA weights from %s", decoder_adapter_dir)
+            set_peft_model_state_dict(model.model.language_model, load_peft_weights(decoder_adapter_dir))
+
     def get_metric_target(examples):
         return {
             "label_ids": processor(
@@ -353,7 +365,7 @@ def create_vision_lora_trainer(
 
     map_num_proc = training_args.dataloader_num_workers or None
     if not training_args.do_predict:
-        metric_targets = dataset["val"].map(
+        metric_targets = dataset["val"].map( 
             get_metric_target,
             remove_columns=dataset["val"].column_names,
             num_proc=map_num_proc,

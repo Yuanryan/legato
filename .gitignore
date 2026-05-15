@@ -177,5 +177,6 @@ datasets/
 wandb/
 outputs/
 music_dataset_10k_v2/
+results/
 
 software/*
