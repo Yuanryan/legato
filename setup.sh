@@ -75,30 +75,30 @@ if command -v apt-get &>/dev/null; then
 fi
 
 # Set CUDA_HOME if not already set (needed by DeepSpeed and Triton at import time)
-if [[ -z "${CUDA_HOME:-}" ]]; then
-    if command -v nvcc &>/dev/null; then
-        export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
-        echo "Set CUDA_HOME=${CUDA_HOME}"
-    elif [[ -d /usr/local/cuda ]]; then
-        export CUDA_HOME=/usr/local/cuda
-        echo "Set CUDA_HOME=${CUDA_HOME} (from /usr/local/cuda)"
-    else
-        echo "WARNING: CUDA_HOME not set and nvcc not found. DeepSpeed import may fail."
-        echo "         Install the CUDA toolkit or set CUDA_HOME manually."
-    fi
-fi
-# Add CUDA bin/lib to PATH for this session
-if [[ -n "${CUDA_HOME:-}" ]]; then
-    export PATH="${CUDA_HOME}/bin:${PATH}"
-    export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
-    # Persist across future shells
-    grep -qxF "export CUDA_HOME=${CUDA_HOME}" ~/.bashrc 2>/dev/null || \
-        echo "export CUDA_HOME=${CUDA_HOME}" >> ~/.bashrc
-    grep -qF 'CUDA_HOME/bin' ~/.bashrc 2>/dev/null || {
-        echo 'export PATH="${CUDA_HOME}/bin:${PATH}"' >> ~/.bashrc
-        echo 'export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"' >> ~/.bashrc
-    }
-fi
+# if [[ -z "${CUDA_HOME:-}" ]]; then
+#     if command -v nvcc &>/dev/null; then
+#         export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+#         echo "Set CUDA_HOME=${CUDA_HOME}"
+#     elif [[ -d /usr/local/cuda ]]; then
+#         export CUDA_HOME=/usr/local/cuda
+#         echo "Set CUDA_HOME=${CUDA_HOME} (from /usr/local/cuda)"
+#     else
+#         echo "WARNING: CUDA_HOME not set and nvcc not found. DeepSpeed import may fail."
+#         echo "         Install the CUDA toolkit or set CUDA_HOME manually."
+#     fi
+# fi
+# # Add CUDA bin/lib to PATH for this session
+# if [[ -n "${CUDA_HOME:-}" ]]; then
+#     export PATH="${CUDA_HOME}/bin:${PATH}"
+#     export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+#     # Persist across future shells
+#     grep -qxF "export CUDA_HOME=${CUDA_HOME}" ~/.bashrc 2>/dev/null || \
+#         echo "export CUDA_HOME=${CUDA_HOME}" >> ~/.bashrc
+#     grep -qF 'CUDA_HOME/bin' ~/.bashrc 2>/dev/null || {
+#         echo 'export PATH="${CUDA_HOME}/bin:${PATH}"' >> ~/.bashrc
+#         echo 'export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"' >> ~/.bashrc
+#     }
+# fi
 
 # ---------------------------------------------------------------------------
 # PyTorch (CUDA 12.4)
@@ -132,24 +132,24 @@ pip install \
 # ---------------------------------------------------------------------------
 # DeepSpeed (Linux only — requires a C++ compiler and CUDA toolkit headers)
 # ---------------------------------------------------------------------------
-echo ""
-echo "Installing DeepSpeed ..."
+# echo ""
+# echo "Installing DeepSpeed ..."
 
-if ! command -v nvcc &>/dev/null; then
-    echo "WARNING: nvcc not found on PATH. DeepSpeed ops will be JIT-compiled at"
-    echo "         first use, which is slower. To pre-compile, install the full"
-    echo "         CUDA toolkit and re-run this script."
-    pip install deepspeed
-else
-    CUDA_VERSION=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
-    # Derive CUDA_HOME from nvcc location if not already set
-    if [[ -z "${CUDA_HOME:-}" ]]; then
-        export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
-        echo "Set CUDA_HOME=${CUDA_HOME}"
-    fi
-    echo "Detected CUDA ${CUDA_VERSION} — building DeepSpeed with pre-compiled ops ..."
-    DS_BUILD_OPS=1 CUDA_HOME="${CUDA_HOME}" pip install deepspeed
-fi
+# if ! command -v nvcc &>/dev/null; then
+#     echo "WARNING: nvcc not found on PATH. DeepSpeed ops will be JIT-compiled at"
+#     echo "         first use, which is slower. To pre-compile, install the full"
+#     echo "         CUDA toolkit and re-run this script."
+#     pip install deepspeed
+# else
+#     CUDA_VERSION=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
+#     # Derive CUDA_HOME from nvcc location if not already set
+#     if [[ -z "${CUDA_HOME:-}" ]]; then
+#         export CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+#         echo "Set CUDA_HOME=${CUDA_HOME}"
+#     fi
+#     echo "Detected CUDA ${CUDA_VERSION} — building DeepSpeed with pre-compiled ops ..."
+#     DS_BUILD_OPS=1 CUDA_HOME="${CUDA_HOME}" pip install deepspeed
+# fi
 
 # ---------------------------------------------------------------------------
 # Optional: musicdiff (needed only for compute_OMR-NED.py)
@@ -166,13 +166,12 @@ fi
 echo ""
 echo "Verifying installation ..."
 python - <<'EOF'
-import torch, transformers, accelerate, peft, datasets, deepspeed
+import torch, transformers, accelerate, peft, datasets
 print(f"  torch        {torch.__version__}  (CUDA available: {torch.cuda.is_available()})")
 print(f"  transformers {transformers.__version__}")
 print(f"  accelerate   {accelerate.__version__}")
 print(f"  peft         {peft.__version__}")
 print(f"  datasets     {datasets.__version__}")
-print(f"  deepspeed    {deepspeed.__version__}")
 if torch.cuda.is_available():
     print(f"  GPU          {torch.cuda.get_device_name(0)}")
     print(f"  CUDA         {torch.version.cuda}")

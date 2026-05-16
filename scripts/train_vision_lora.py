@@ -308,8 +308,13 @@ def create_vision_lora_trainer(
 ) -> Tuple[LegatoTrainer, object, List[str]]:
     """Load data, attach LoRA + projector, and build ``LegatoTrainer`` (same as ``train_vision_lora`` main)."""
 
-    logger.info("Loading dataset from disk: %s", data_args.dataset_path)
-    dataset = load_from_disk(data_args.dataset_path)
+    logger.info("Loading dataset from: %s", data_args.dataset_path)
+    if data_args.dataset_path.endswith(".parquet"):
+        dataset = load_dataset("parquet", data_files=data_args.dataset_path)
+    elif os.path.isfile(os.path.join(data_args.dataset_path, "train-00000-of-00001.parquet")):
+        dataset = load_dataset("parquet", data_files={"train": os.path.join(data_args.dataset_path, "*.parquet")})
+    else:
+        dataset = load_from_disk(data_args.dataset_path)
     if "val" not in dataset and "validation" in dataset:
         dataset["val"] = dataset["validation"]
     for split, mini_file in [("val", data_args.mini_val_file), ("test", data_args.mini_test_file)]:
@@ -353,10 +358,14 @@ def create_vision_lora_trainer(
             logger.info("Loading trained decoder LoRA weights from %s", decoder_adapter_dir)
             set_peft_model_state_dict(model.model.language_model, load_peft_weights(decoder_adapter_dir))
 
+    image_col = data_args.image_column
+    transcription_col = data_args.transcription_column
+    predict_split = data_args.predict_split
+
     def get_metric_target(examples):
         return {
             "label_ids": processor(
-                text=examples["transcription"],
+                text=examples[transcription_col],
                 add_special_tokens=False,
                 verbose=False,
                 truncation=False,
@@ -365,7 +374,7 @@ def create_vision_lora_trainer(
 
     map_num_proc = training_args.dataloader_num_workers or None
     if not training_args.do_predict:
-        metric_targets = dataset["val"].map( 
+        metric_targets = dataset["val"].map(
             get_metric_target,
             remove_columns=dataset["val"].column_names,
             num_proc=map_num_proc,
@@ -373,15 +382,15 @@ def create_vision_lora_trainer(
         ).to_dict()
     else:
         metric_targets = (
-            dataset["test"]
+            dataset[predict_split]
             .map(
                 get_metric_target,
-                remove_columns=dataset["test"].column_names,
+                remove_columns=dataset[predict_split].column_names,
                 num_proc=map_num_proc,
                 batched=True,
             )
             .to_dict()
-            if "transcription" in dataset["test"].column_names
+            if transcription_col in dataset[predict_split].column_names
             else None
         )
 
@@ -389,8 +398,8 @@ def create_vision_lora_trainer(
 
     def collate_fn(examples):
         outputs = processor(
-            images=[example["image"] for example in examples],
-            text=[example["transcription"] for example in examples],
+            images=[example[image_col] for example in examples],
+            text=[example.get(transcription_col, "") for example in examples],
             return_num_tiles=True,
             truncation=True,
             padding="max_length",
@@ -506,7 +515,7 @@ def main():
         save_trainable_artifacts(trainer, training_args.output_dir, lora_args, trainable_names, logger, processor=processor)
 
     if training_args.do_predict:
-        outputs = trainer.predict(dataset["test"])
+        outputs = trainer.predict(dataset[predict_split])
 
         if trainer.is_world_process_zero():
             os.makedirs(training_args.output_dir, exist_ok=True)

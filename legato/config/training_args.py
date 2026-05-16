@@ -16,6 +16,18 @@ class DataArguments:
         default=False,
         metadata={"help": "Use dummy data (32 items) for testing purposes."},
     )
+    image_column: str = field(
+        default="image",
+        metadata={"help": "Dataset column to use as input image."},
+    )
+    transcription_column: str = field(
+        default="transcription",
+        metadata={"help": "Dataset column containing the ground-truth ABC transcription."},
+    )
+    predict_split: str = field(
+        default="test",
+        metadata={"help": "Dataset split to run --do_predict on (e.g. 'test', 'train')."},
+    )
 
 @dataclass
 class ModelArguments:

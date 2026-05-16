@@ -28,12 +28,23 @@ Usage:
 import argparse
 import random
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 from datasets import Dataset, DatasetDict, Features, Value
 from datasets import Image as HFImage
 from PIL import Image
+
+
+def abc_to_musicxml(abc_text: str) -> str:
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent.parent / "utils" / "abc2xml.py"), "-"],
+        input=abc_text.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +60,8 @@ def parse_args():
     p.add_argument("--train_ratio", type=float, default=0.8)
     p.add_argument("--val_ratio",   type=float, default=0.1)
     p.add_argument("--seed",        type=int,   default=42)
+    p.add_argument("--include_musicxml", action="store_true",
+                   help="Convert ABC to MusicXML and include as a dataset column (needed for TEDn/OMR-NED eval)")
     return p.parse_args()
 
 
@@ -56,7 +69,7 @@ def parse_args():
 # Per-score loading
 # ---------------------------------------------------------------------------
 
-def load_example(score_id: str, abc_dir: Path, png_dir: Path) -> dict | None:
+def load_example(score_id: str, abc_dir: Path, png_dir: Path, include_musicxml: bool = False) -> dict | None:
     abc_path = abc_dir / f"{score_id}.abc"
     if not abc_path.exists():
         return None
@@ -83,7 +96,10 @@ def load_example(score_id: str, abc_dir: Path, png_dir: Path) -> dict | None:
             image.paste(page, (0, y))
             y += page.height
 
-    return {"image": image, "transcription": transcription, "filename": score_id}
+    example = {"image": image, "transcription": transcription, "filename": score_id}
+    if include_musicxml:
+        example["musicxml"] = abc_to_musicxml(transcription)
+    return example
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +139,7 @@ def main():
         "image":         HFImage(),
         "transcription": Value("string"),
         "filename":      Value("string"),
+        **({"musicxml": Value("string")} if args.include_musicxml else {}),
     })
 
     # Build each split with a generator so only one image is in memory at a time
@@ -131,7 +148,7 @@ def main():
             for i, score_id in enumerate(ids):
                 if i % 500 == 0:
                     print(f"    {i}/{len(ids)} ...")
-                example = load_example(score_id, abc_dir, png_dir)
+                example = load_example(score_id, abc_dir, png_dir, include_musicxml=args.include_musicxml)
                 if example is None:
                     print(f"    WARNING: skipping {score_id} (missing files)")
                     continue
