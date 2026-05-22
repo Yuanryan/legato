@@ -309,12 +309,16 @@ def create_vision_lora_trainer(
     """Load data, attach LoRA + projector, and build ``LegatoTrainer`` (same as ``train_vision_lora`` main)."""
 
     logger.info("Loading dataset from: %s", data_args.dataset_path)
-    if data_args.dataset_path.endswith(".parquet"):
-        dataset = load_dataset("parquet", data_files=data_args.dataset_path)
-    elif os.path.isfile(os.path.join(data_args.dataset_path, "train-00000-of-00001.parquet")):
-        dataset = load_dataset("parquet", data_files={"train": os.path.join(data_args.dataset_path, "*.parquet")})
+    _path = data_args.dataset_path
+    if not os.path.exists(_path):
+        # Treat as a HuggingFace Hub dataset ID (e.g. "guangyangmusic/OpenScore-StringQuartets")
+        dataset = load_dataset(_path)
+    elif _path.endswith(".parquet"):
+        dataset = load_dataset("parquet", data_files=_path)
+    elif os.path.isfile(os.path.join(_path, "train-00000-of-00001.parquet")):
+        dataset = load_dataset("parquet", data_files={"train": os.path.join(_path, "*.parquet")})
     else:
-        dataset = load_from_disk(data_args.dataset_path)
+        dataset = load_from_disk(_path)
     if "val" not in dataset and "validation" in dataset:
         dataset["val"] = dataset["validation"]
     for split, mini_file in [("val", data_args.mini_val_file), ("test", data_args.mini_test_file)]:

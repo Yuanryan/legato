@@ -233,4 +233,4 @@ PYTHONPATH=. accelerate launch --config_file configs/bf16.yaml \
     --dataloader_num_workers 4
 
 
-```
+```![1779420992662](image/README/1779420992662.png)
