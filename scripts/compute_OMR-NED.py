@@ -44,7 +44,9 @@ if __name__ == "__main__":
                 f.write(gold_xml)
     
     pred_folder = os.path.join(folder_name, os.path.basename(args.prediction_file).replace('.json', ''))
-    assert not os.path.exists(pred_folder), f"Prediction folder {pred_folder} already exists"
+    import shutil
+    if os.path.exists(pred_folder):
+        shutil.rmtree(pred_folder)
     os.makedirs(pred_folder)
     for i, pred_xml in enumerate(pred_xmls):
         with open(os.path.join(pred_folder, f'{i}.{args.prediction_type}'), 'w') as f:
