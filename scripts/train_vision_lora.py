@@ -451,8 +451,8 @@ def create_vision_lora_trainer(
         model=model,
         args=training_args,
         data_collator=collate_fn,
-        train_dataset=dataset["train"],
-        eval_dataset=dataset["val"],
+        train_dataset=dataset.get("train"),
+        eval_dataset=dataset.get("val"),
         compute_metrics=metric_fn,
         lora_args=lora_args,
     )
