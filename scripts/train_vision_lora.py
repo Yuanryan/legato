@@ -299,13 +299,22 @@ class VisionLoraTrainer(LegatoTrainer):
         return self.optimizer
 
 
+def predictions_to_token_ids(predictions):
+    arr = np.asarray(predictions)
+    if arr.ndim == 3:
+        return arr.argmax(axis=-1)
+    if arr.dtype.kind in "fc":
+        return np.rint(arr).astype(np.int64)
+    return arr
+
+
 def create_vision_lora_trainer(
     training_args: Seq2SeqTrainingArguments,
     data_args: DataArguments,
     model_args: ModelArguments,
     lora_args: VisionLoraArguments,
     logger: logging.Logger,
-) -> Tuple[LegatoTrainer, object, List[str]]:
+) -> Tuple[LegatoTrainer, object, List[str], object, str]:
     """Load data, attach LoRA + projector, and build ``LegatoTrainer`` (same as ``train_vision_lora`` main)."""
 
     logger.info("Loading dataset from: %s", data_args.dataset_path)
@@ -337,13 +346,54 @@ def create_vision_lora_trainer(
         dataset["val"] = dataset["val"].select(range(32))
         dataset["test"] = dataset["test"].select(range(32))
 
+    predict_split = data_args.predict_split
+    if data_args.max_predict_samples is not None and predict_split in dataset:
+        n = min(data_args.max_predict_samples, len(dataset[predict_split]))
+        logger.info("Truncating predict split '%s' to %d samples.", predict_split, n)
+        dataset[predict_split] = dataset[predict_split].select(range(n))
+
     set_seed(training_args.seed)
 
-    if model_args.pretrained_model:
-        model = AutoModel.from_pretrained(model_args.pretrained_model)
+    # Load the base model first to guarantee full vision_model weights are present.
+    # The LoRA fine-tuned checkpoint stores vision_model.* under the PEFT-wrapped
+    # naming convention (model.vision_model.base_model.model.*), which AutoModel
+    # silently fails to load into a fresh LegatoModel — leaving the vision encoder
+    # randomly initialized. We work around this by always loading the base model
+    # (which has full vision weights) and then overlaying the non-vision weights
+    # from the checkpoint (LM is frozen during LoRA training; projector is trained
+    # and stored under model.multi_modal_projector.*).
+    base_path = model_args.model_config or model_args.pretrained_model
+    if base_path:
+        model = AutoModel.from_pretrained(base_path)
     else:
         config = AutoConfig.from_pretrained(model_args.model_config)
         model = LegatoModel(config)
+
+    if model_args.pretrained_model and model_args.pretrained_model != base_path:
+        import os as _os
+        ckpt_safetensors = _os.path.join(model_args.pretrained_model, "model.safetensors")
+        if _os.path.isfile(ckpt_safetensors):
+            from safetensors.torch import load_file as _load_safetensors
+            ckpt_state = _load_safetensors(ckpt_safetensors)
+            # Skip any vision_model.* keys (whether plain or PEFT-wrapped) so we keep
+            # the base model's correctly-loaded vision weights.
+            ckpt_state = {
+                k: v for k, v in ckpt_state.items()
+                if "vision_model" not in k
+            }
+            missing, unexpected = model.load_state_dict(ckpt_state, strict=False)
+            logger.info(
+                "Loaded %d non-vision tensors from checkpoint %s "
+                "(missing=%d, unexpected=%d)",
+                len(ckpt_state), ckpt_safetensors, len(missing), len(unexpected),
+            )
+
+    # Apply paper-style generation defaults (beam=10, max_length=2048, repetition_penalty=1.1).
+    # Critical: repetition_penalty stops the model from collapsing into degenerate token loops
+    # like ' !tenuto!e!tenuto!e | !tenuto!e!tenuto!e | ...' that fill the entire context.
+    # Without this, LoRA-fine-tuned checkpoints in particular tend to loop after a few measures.
+    if model.generation_config is not None:
+        model.generation_config.repetition_penalty = 1.1
 
     processor_source = model_args.model_config or model_args.pretrained_model
     processor = AutoProcessor.from_pretrained(processor_source)
@@ -364,7 +414,6 @@ def create_vision_lora_trainer(
 
     image_col = data_args.image_column
     transcription_col = data_args.transcription_column
-    predict_split = data_args.predict_split
 
     def get_metric_target(examples):
         return {
@@ -427,16 +476,9 @@ def create_vision_lora_trainer(
         masks = np.isin(array, special_tokens, invert=True)
         return [a[mask] for a, mask in zip(array, masks)]
 
-    def predictions_to_token_ids(predictions):
-        """Teacher-forcing eval returns float logits [batch, seq, vocab]; metrics need int token ids."""
-        arr = np.asarray(predictions)
-        if arr.ndim == 3:
-            return arr.argmax(axis=-1)
-        if arr.dtype.kind in "fc":
-            return np.rint(arr).astype(np.int64)
-        return arr
-
     def metric_fn(p):
+        if metric_targets is None:
+            return {}
         preds = remove_special_tokens(predictions_to_token_ids(p.predictions))
         results = [
             compute_error_rates(tokenizer, training_args.dataloader_num_workers, *metric_targets.values(), preds)
@@ -458,7 +500,7 @@ def create_vision_lora_trainer(
     )
     trainer.add_callback(SaveLoraCallback(trainer, lora_args, trainable_names, logger))
 
-    return trainer, processor, trainable_names
+    return trainer, processor, trainable_names, dataset, predict_split, remove_special_tokens, metric_targets, tokenizer
 
 
 def main():
@@ -480,7 +522,7 @@ def main():
     if training_args.torch_compile:
         torch._dynamo.config.cache_size_limit = 256
 
-    trainer, processor, trainable_names = create_vision_lora_trainer(
+    trainer, processor, trainable_names, dataset, predict_split, remove_special_tokens, metric_targets, tokenizer = create_vision_lora_trainer(
         training_args, data_args, model_args, lora_args, logger
     )
 

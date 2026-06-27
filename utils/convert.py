@@ -185,6 +185,8 @@ if __name__ == "__main__":
     if args.input_format == "abc":
         outputs = convert_abc_to_xml(preds, args.tmp_dir)
         output_file = args.input_file.replace('_abc.json', '_xml.json')
+        if output_file == args.input_file:
+            output_file = args.input_file.replace('.json', '_xml.json')
     else:
         raise NotImplementedError(f"Input format {args.input_format} not supported")
         

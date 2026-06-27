@@ -28,6 +28,10 @@ class DataArguments:
         default="test",
         metadata={"help": "Dataset split to run --do_predict on (e.g. 'test', 'train')."},
     )
+    max_predict_samples: Optional[int] = field(
+        default=None,
+        metadata={"help": "Truncate the predict split to this many samples (useful for debugging)."},
+    )
 
 @dataclass
 class ModelArguments:

@@ -22,7 +22,12 @@ def cut_xml(xml, limit=6000):
         
 def compute_score(input_data):
     idx, pred_xml, gold_xml = input_data
-    pred_xml, pred_init_num_nodes = cut_xml(pred_xml, 6000)
+    if not pred_xml or not pred_xml.strip():
+        return idx, 100.0
+    try:
+        pred_xml, pred_init_num_nodes = cut_xml(pred_xml, 6000)
+    except ET.ParseError:
+        return idx, 100.0
     gold_xml, gold_init_num_nodes = cut_xml(gold_xml, 6000)
     if pred_init_num_nodes > 6000:
         print(f"Index {idx}: Pred XML initial nodes {pred_init_num_nodes}, after cut {sum(1 for _ in ET.fromstring(pred_xml).iter())}")
@@ -52,15 +57,40 @@ if __name__ == "__main__":
         ds = load_from_disk(args.ground_truth)
         gold_xmls = [txt for txt in ds['musicxml']]
 
-    # Submit all tasks first
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
-        tuples = list(zip(range(len(pred_xmls)), pred_xmls, gold_xmls))
-        futures = [executor.submit(compute_score, data) for data in tuples]
-
-        TED_scores = []
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Computing TED scores..."):
-            TED_scores.append(future.result())
-
+    # Process items in batches so a single OOM-killed worker only takes down its batch,
+    # not the entire run. We also catch BrokenProcessPool to allow resuming with a fresh pool.
+    tuples = list(zip(range(len(pred_xmls)), pred_xmls, gold_xmls))
+    TED_scores = []
+    failed_indices = []
+    batch_size = max(args.num_workers * 4, 16)
+    pending = list(tuples)
+    pbar = tqdm(total=len(tuples), desc="Computing TED scores...")
+    while pending:
+        batch, pending = pending[:batch_size], pending[batch_size:]
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+                future_to_idx = {executor.submit(compute_score, data): data[0] for data in batch}
+                for future in concurrent.futures.as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        TED_scores.append(future.result())
+                    except Exception as e:
+                        print(f"Index {idx}: failed with {type(e).__name__}: {e}; assigning 100% score")
+                        failed_indices.append(idx)
+                        TED_scores.append((idx, 100.0))
+                    pbar.update(1)
+        except concurrent.futures.process.BrokenProcessPool:
+            # Mark all unfinished items in this batch as failed
+            done_indices = {idx for idx, _ in TED_scores}
+            for idx, _, _ in batch:
+                if idx not in done_indices:
+                    print(f"Index {idx}: worker pool broken; assigning 100% score")
+                    failed_indices.append(idx)
+                    TED_scores.append((idx, 100.0))
+                    pbar.update(1)
+    pbar.close()
+    if failed_indices:
+        print(f"Failed indices ({len(failed_indices)}): {sorted(failed_indices)}")
     TED_scores.sort(key=lambda x: x[0])
     TED_scores = [x[1] for x in TED_scores]
 
