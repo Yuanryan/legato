@@ -4,6 +4,7 @@ Context for a fresh (SSH'd) Claude Code session picking up this work. Read this
 first, then verify the live facts (model file sizes, GPU) before acting.
 
 ## Goal
+
 **Reproduce the original LEGATO from-scratch training** (paper arXiv:2506.19065)
 using `scripts/train.py` + `configs/legato.json` on the PDMX-Synth dataset.
 
@@ -15,6 +16,7 @@ This repo (`Yuanryan/Legato`) is a fork of the official `guang-yng/legato` that
 also added a vision-LoRA path; ignore that path entirely for this run.
 
 ## THE KEY FINDING (this overturns earlier assumptions)
+
 LEGATO is **NOT** a fine-tuned 11B model. The HF page (`guangyangmusic/legato`)
 shows **0.1B params** and the config confirms why:
 
@@ -30,6 +32,7 @@ So "11B" only refers to the reused/frozen vision encoder + cross-attn plumbing.
 The trainable part is ~0.1B. **Optimizer states are ~1GB, not ~88GB.**
 
 ### Consequence for compute
+
 - **No memory wall.** Full training fits on a SINGLE A100-80GB with huge headroom
   (would fit on an L40S-48GB, likely a 24GB card too).
 - The original team's multi-GPU node was for **throughput** (data parallelism),
@@ -38,6 +41,7 @@ The trainable part is ~0.1B. **Optimizer states are ~1GB, not ~88GB.**
   epochs = many cheap steps). Can scale down via subset / fewer epochs if needed.
 
 ## Hardware available to the user (credits-based cloud provider, region TW-04)
+
 - 1× **A100-SXM4-80GB**, 16 vCPU, 80GB RAM, ~1.2 cr/hr  ← BEST single card, use this
 - 1× L40S-48GB, up to 256GB RAM, ~0.83–0.95 cr/hr
 - 8× L40S-48GB, 1792GB RAM, ~6.89 cr/hr (currently Avail Unit = 0)
@@ -45,16 +49,17 @@ The trainable part is ~0.1B. **Optimizer states are ~1GB, not ~88GB.**
 **Recommendation: single A100-80GB is more than enough for the full model.**
 
 ## Dataset facts
+
 - Original training set: **`guangyangmusic/PDMX-Synth`** on HF — **gated**
   (must accept CC-BY-4.0 + log in), ~19.1GB parquet, ~238,386 image–ABC pairs
   (from PDMX's 250K MusicXML, ~5% filtered for aspect ratio >10:1).
-- Generation (if ever regenerating): MuseScore 3.6.2 (XML→PNG) + abcm2ps 8.14.15
-  + CairoSVG (ABC→SVG→PNG); ABC canonicalized (line break every 5 bars, L:1/8,
+- Generation (if ever regenerating): MuseScore 3.6.2 (XML→PNG) + abcm2ps 8.14.15 +    CairoSVG (ABC→SVG→PNG); ABC canonicalized (line break every 5 bars, L:1/8,
   text→placeholder tokens).
 - **Gated access the user must accept (cannot be clicked by Claude):**
   `meta-llama/Llama-3.2-11B-Vision` AND `guangyangmusic/PDMX-Synth`.
 
 ## Local datasets present (the FORK's own data, NOT PDMX-Synth)
+
 - `datasets/music_10kv1`, `datasets/music_10kv2` — 8k-train custom OMR sets
   (image, transcription, filename, musicxml), used for LoRA fine-tuning.
 - `datasets/openscore_string_quartets` — eval set.
@@ -67,6 +72,7 @@ The local `datasets/music_10kv*` sets belong to that LoRA work and are NOT the
 training data for this reproduction — use PDMX-Synth.
 
 ## Repo layout that matters
+
 - Model: `legato/models/modeling_legato.py` (LegatoModel ⊂ MllamaForConditionalGeneration;
   vision frozen at L26; save_pretrained strips vision weights at L82 — why the
   checkpoint is tiny). Config: `legato/models/configuration_legato.py`.
@@ -85,6 +91,7 @@ training data for this reproduction — use PDMX-Synth.
   the model is tiny).
 
 ## Recommended plan (staged, fail-cheap-first) on the single A100-80GB
+
 0. Smoke test: `scripts/train.py` with `--dummy_data` (32 items), 1 epoch,
    torch_compile off — confirm load/train/save/eval work.
 1. Eval reproduction FIRST: download `guangyangmusic/legato`, run inference + ER on
@@ -96,12 +103,14 @@ training data for this reproduction — use PDMX-Synth.
    the loss/SER trend matches. No 8-bit Adam / offload tricks needed — model is 0.1B.
 
 ## Open verifications for the next session (do before training)
+
 - Confirm `guangyangmusic/legato` safetensors file size (should be small, ~0.1B)
   to lock the exact trainable param count.
 - Confirm the user accepted both HF gated licenses.
 - Decide: full PDMX-Synth run vs scaled subset; full model is feasible either way.
 
 ## Access / how Claude operates on the box
+
 HF token is cached locally at `~/.cache/huggingface/token`. Claude has no
 independent SSH; user must either (A) hold an SSH session and pipe commands, or
 (B) run Claude Code natively ON the A100 box (recommended for multi-day runs).
